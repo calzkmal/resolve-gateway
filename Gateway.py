@@ -67,29 +67,39 @@ def ensure_timeline(project, body: dict):
 
 # apply dynamic character level styling for trade text
 # NEED FIXING: currently does not work as intended
-def apply_style_to_substring(cls_tool, full_text: str, target_phrase: str, style_id: int, style_value: float):
-    cls_tool["Text"] = full_text
-    
-    cls_array = []
-    
-    if target_phrase:
-        for match in re.finditer(re.escape(target_phrase), full_text):
-            # Convert Python 0-based index to Fusion 1-based index [1]
-            start = match.start() + 1
-            end = match.end()
+# I think we should just split this into multipl variables instead, and keep the cls static (not touching the cls'ed text)
+# def update_cls_text(comp, tool_name, new_text):
+#     tool = comp.FindTool(tool_name)
+#     if not tool:
+#         print(f"Warning: Tool '{tool_name}' not found.")
+#         return
 
-            cls_array.append({
-                1: style_id,      # Style Property (e.g., 1100 for Size, 102 for Font)
-                2: start,         # Start Index
-                3: end,           # End Index
-                "Value": style_value
-            })
+#     matches = re.finditer(r"(\d+\.?\d*)(pts\*?)", new_text)
+    
+#     lua_entries = []
+    
+#     for match in matches:
+#         n_start, n_end = match.start(1), match.end(1) - 1
+#         u_start, u_end = match.start(2), match.end(2) - 1
+        
+#         lua_entries.append(f"{{ 102, {n_start}, {n_end}, Value = 0.094 }}")
+#         lua_entries.append(f"{{ 102, {u_start}, {u_end}, Value = 0.067 }}")
+#         lua_entries.append(f"{{ 1100, {u_start}, {u_end}, Value = 0.937 }}")
 
-    if cls_array:
-        cls_tool["CharacterLevelStyling"] = {
-            "Array": cls_array,
-            "Value": ""
-        }
+#     styling_array_str = "{" + ",".join(lua_entries) + "}"
+#     sanitized_text = new_text.replace("\n", "\\n")
+#     lua_script = f'''
+#         obj = comp:FindTool("{tool_name}")
+#         if obj then
+#             obj.StyledText:Disconnect()
+#             obj.StyledText = StyledText {{
+#                 Array = {styling_array_str},
+#                 Value = "{sanitized_text}"
+#             }}
+#         end
+#         '''
+    
+#     comp.Execute(lua_script)
 
 # ================== ROUTES ==================
 @app.post("/render")
@@ -133,15 +143,12 @@ def render(body: dict, x_api_key: str = Header(None)):
             t_back["StyledText"] = str(body["text_slick"])
 
     if "text_trade" in body:
-        t_trade = str(body["text_trade"]).strip()
-        
-        cls_front = fusion_comp.FindTool("CharacterLevelStyling3_1") 
-        cls_back = fusion_comp.FindTool("CharacterLevelStyling3")
-        
-        if cls_front:
-            apply_style_to_substring(cls_front, t_trade, "0.03", 1100, 0.937)
-        if cls_back:
-            apply_style_to_substring(cls_back, t_trade, "0.03", 1100, 0.937)
+        t_trade = fusion_comp.FindTool("VAR_Text2B")
+        if t_trade:
+            t_trade["StyledText"] = str(body["text_trade"])
+        t_trade = fusion_comp.FindTool("VAR_Text2")
+        if t_trade:
+            t_trade["StyledText"] = str(body["text_trade"])
 
     if "text_tagline" in body:
         t_tagline = fusion_comp.FindTool("VAR_TextTaglineB")
@@ -157,17 +164,9 @@ def render(body: dict, x_api_key: str = Header(None)):
             t_button["StyledText"] = str(body["text_button"])
     
     if "text_end" in body:
-        t_end_text = str(body["text_end"]).strip()
-        t_end_tool = fusion_comp.FindTool("CharacterLevelStyling4")
-
-        if t_end_tool:
-            sentences = t_end_text.split('. ')
-            target_sentence = ""
-            
-            if len(sentences) > 1:
-                target_sentence = sentences[6] 
-                
-            apply_style_to_substring(t_end_tool, t_end_text, target_sentence, 102, 2.0)
+        t_end = fusion_comp.FindTool("VAR_TextEnd")
+        if t_end:
+            t_end["StyledText"] = str(body["text_end"])
 
     if "media_url" in body:
         download_media(body["media_url"])
