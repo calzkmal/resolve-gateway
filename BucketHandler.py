@@ -39,6 +39,7 @@ def get_oauth_creds(client_secret_json: str, token_path: str = "token.json"):
 
     return creds
 
+
 def upload_file(file_path: str, drive_folder_id: str):
     if not os.path.isfile(file_path):
         raise ValueError(f"File not found: {file_path}")
@@ -66,6 +67,7 @@ def upload_file(file_path: str, drive_folder_id: str):
             print(f"Uploading {int(status.progress() * 100)}%")
 
     return response
+
 
 def download_media(url: str) -> str:
     local_path = os.path.join(MEDIA_TEMP_DIR, "Bg_Media_4K.mp4")

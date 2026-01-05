@@ -1,8 +1,5 @@
 import os
-import re
-import sys
 import time
-import json
 import uuid
 import shutil
 from dotenv import load_dotenv
@@ -16,8 +13,6 @@ from BucketHandler import download_media, upload_file
 # ================== INIT ==================
 load_dotenv()
 
-HOST = "0.0.0.0"
-PORT = 5080
 API_KEY = os.getenv("API_KEY")
 
 if not API_KEY:
@@ -29,6 +24,7 @@ app = FastAPI(title="Resolve HTTP Gateway")
 def auth(x_api_key: str | None):
     if x_api_key != API_KEY:
         raise HTTPException(401, "unauthorized")
+
 
 # ================== RESOLVE HELPERS ==================
 def connect_project(body: dict):
@@ -46,6 +42,7 @@ def connect_project(body: dict):
         raise HTTPException(400, "project_not_found")
 
     return project
+
 
 def ensure_timeline(project, body: dict):
     timeline = project.GetCurrentTimeline()
@@ -67,14 +64,12 @@ def ensure_timeline(project, body: dict):
     project.SetCurrentTimeline(timelines[0])
     return timelines[0]
 
+
 # apply dynamic character level styling for trade text
 # NEED MORE WORK: text_end has not yet been implemented
-def build_trailing_cls_array(text: str) -> str:
+def text_trade_cls(text: str) -> str:
     txt = text.rstrip()
     length = len(txt)
-
-    if length < 8:
-        raise ValueError("text_trade must be at least 8 characters")
 
     s1, e1 = length - 8, length - 5
     s2, e2 = length - 4, length - 1
@@ -85,10 +80,51 @@ def build_trailing_cls_array(text: str) -> str:
         f"{{ 1100, {s2}, {e2}, Value = 0.937 }}"
     )
 
+
+def find_sentence_dots(text: str):
+    dots = []
+    for i, ch in enumerate(text):
+        if ch != ".":
+            continue
+
+        prev_c = text[i - 1] if i > 0 else ""
+        next_c = text[i + 1] if i + 1 < len(text) else ""
+
+        # Ignore decimal
+        if prev_c.isdigit() and next_c.isdigit():
+            continue
+
+        # Valid sentence end
+        dots.append(i)
+
+    return dots
+
+
+def text_end_cls(text: str) -> str:
+    txt = text.rstrip()
+
+    dots = find_sentence_dots(txt)
+    if len(dots) < 2:
+        return ""
+
+    first_dot = dots[0]
+    second_dot = dots[1]
+
+    # Skip whitespace/newlines after first sentence
+    start = first_dot + 1
+    while start < len(txt) and txt[start] in (" ", "\n"):
+        start += 1
+
+    end = second_dot  # inclusive
+
+    return f'{{ 109, {start}, {end}, String = "Bold" }}'
+
+
 def lua_string(text: str) -> str:
-    # Safe for Fusion/Lua
     return "[[" + text.replace("]]", "] ]") + "]]"
 
+
+# Create a temporary fusion comp with dynamic text and cls arrays
 def make_temp_comp(base_comp_path: str, body: dict) -> str:
     job_id = uuid.uuid4().hex
     tmp_dir = os.path.join(os.path.dirname(base_comp_path), "tmp")
@@ -102,44 +138,46 @@ def make_temp_comp(base_comp_path: str, body: dict) -> str:
 
     if "text_trade" in body:
         trade_text = body["text_trade"].rstrip()
-        cls_array = build_trailing_cls_array(trade_text)
+        cls_array = text_trade_cls(trade_text)
 
         comp_text = comp_text.replace("__TRADE_TEXT__", lua_string(trade_text))
         comp_text = comp_text.replace("__CLS_ARRAY__", cls_array)
+
+    if "text_end" in body:
+        end_text = body["text_end"].rstrip()
+        end_cls_array = text_end_cls(end_text)
+
+        comp_text = comp_text.replace("__END_TEXT__", lua_string(end_text))
+        comp_text = comp_text.replace("__END_CLS_ARRAY__", end_cls_array)
 
     with open(tmp_comp_path, "w", encoding="utf-8") as f:
         f.write(comp_text)
 
     return tmp_comp_path
 
+
+# Apply fusion comp variables inside the timeline item
 def apply_fusion_variables(fusion_comp, body: dict, project):
     # ---------- TEXT VARIABLES ----------
-    def set_text(tool_name, key):
-        if key in body:
-            t = fusion_comp.FindTool(tool_name)
-            if t:
-                t["StyledText"] = str(body[key])
+    def apply_text_variables(fusion_comp, body: dict):
+        for key, tool_names in TEXT_MAP.items():
+            if key not in body:
+                continue
 
-    set_text("VAR_TextMediaDesc", "text_desc")
-    set_text("VAR_RW", "text_rw")
+            value = str(body[key])
+            for name in tool_names:
+                t = fusion_comp.FindTool(name)
+                if t:
+                    t["StyledText"] = value
 
-    if "text_slick" in body:
-        for name in ("VAR_Text1B", "VAR_Text1"):
-            t = fusion_comp.FindTool(name)
-            if t:
-                t["StyledText"] = str(body["text_slick"])
-
-    if "text_tagline" in body:
-        for name in ("VAR_TextTaglineB", "VAR_TextTagline"):
-            t = fusion_comp.FindTool(name)
-            if t:
-                t["StyledText"] = str(body["text_tagline"])
-
-    if "text_button" in body:
-        set_text("VAR_TextButton", "text_button")
-
-    if "text_end" in body:
-        set_text("VAR_TextEnd", "text_end")
+    TEXT_MAP = {
+        "text_desc":     ["VAR_TextMediaDesc"],
+        "text_rw":       ["VAR_RW"],
+        "text_slick":    ["VAR_Text1", "VAR_Text1B"],
+        "text_tagline":  ["VAR_TextTagline", "VAR_TextTaglineB"],
+        "text_button":   ["VAR_TextButton"],
+    }
+    apply_text_variables(fusion_comp, body)
 
     # ---------- MEDIA ----------
     if "media_url" in body:
@@ -165,6 +203,7 @@ def apply_fusion_variables(fusion_comp, body: dict, project):
         if not mp.RelinkClips([media_item], "C:/resolve_presets"):
             raise HTTPException(500, "media_relink_failed")
 
+
 def start_render(project, timeline, body: dict):
     project.LoadRenderPreset("test-sanity-preset")
 
@@ -187,6 +226,7 @@ def start_render(project, timeline, body: dict):
     project.StartRendering([job_id])
 
     return job_id
+
 
 # ================== ROUTES ==================
 @app.post("/render")
@@ -230,6 +270,7 @@ def render(body: dict, x_api_key: str = Header(None)):
         "temp_comp": tmp_comp
     }
 
+
 @app.post("/render/status")
 def render_status(body: dict, x_api_key: str = Header(None)):
     auth(x_api_key)
@@ -248,6 +289,7 @@ def render_status(body: dict, x_api_key: str = Header(None)):
         response["job"] = status
 
     return response
+
 
 @app.post("/render/upload")
 def render_upload(body: dict, x_api_key: str = Header(None)):
@@ -286,7 +328,3 @@ def render_upload(body: dict, x_api_key: str = Header(None)):
         "file_name": result["name"],
         "drive_url": f"https://drive.google.com/file/d/{result['id']}/view"
     }
-
-# ================== ENTRY ==================
-if __name__ == "__main__":
-    uvicorn.run("Gateway:app", host=HOST, port=PORT)
